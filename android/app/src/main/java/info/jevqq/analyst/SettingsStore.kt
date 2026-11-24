@@ -76,6 +76,32 @@ internal class SettingsStore(context: Context) {
     private fun encode(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
     private fun decode(value: String): ByteArray = Base64.decode(value, Base64.NO_WRAP)
 
+    // --- Feature preferences (non-secret, plain preferences) ---
+
+    /** History persistence is opt-in; when off nothing is written to disk. */
+    fun historyEnabled(): Boolean = prefs.getBoolean("history_enabled", false)
+    fun setHistoryEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("history_enabled", enabled).apply()
+    }
+
+    fun retentionDays(): Int = prefs.getInt("history_retention_days", 30).coerceIn(1, 365)
+    fun setRetentionDays(days: Int) {
+        prefs.edit().putInt("history_retention_days", days.coerceIn(1, 365)).apply()
+    }
+
+    fun onboardingDone(): Boolean = prefs.getBoolean("onboarding_done", false)
+    fun setOnboardingDone() {
+        prefs.edit().putBoolean("onboarding_done", true).apply()
+    }
+
+    /** Newline-separated local alert keywords; matched on device only. */
+    fun alertKeywords(): List<String> = prefs.getString("alert_keywords", "").orEmpty()
+        .split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+    fun setAlertKeywords(keywords: List<String>) {
+        prefs.edit().putString("alert_keywords",
+            keywords.map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")).apply()
+    }
+
     companion object {
         const val JEV_URL = "https://api.typesafe.ai/v1/systemone"
         const val GATEWAY_URL = "http://127.0.0.1:8080/v1/systemone"

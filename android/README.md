@@ -2,6 +2,15 @@
 
 Android 端使用无障碍服务读取**前台 QQ 当前聊天中屏幕上可见**的节点。它逐条分析可确定为对方发送的文字；自己的文字只作为上下文；可识别的媒体只显示类型占位。结果显示在 QQ 之上的小面板中，切出 QQ 后隐藏。它不截图、滚动、复制、填入或发送消息。
 
+## 加强版新增功能（本地化，不改判断协议）
+
+在原版数据流（无障碍读取 → Jev 判断 → 悬浮面板）之上，加强版新增四块本地能力，均不新增网络请求：
+
+- **建议回复**：每张分析卡下方新增“建议回复 · 本地生成”区。由内置模板（`shared/reply_templates.json`，12 种行动策略 × 正式/随意两种语气）结合判断结果的 Top 策略在本机拼装 2~3 条候选；回复风险 ≥7、对方设边界或首选策略为“先不回复”时只显示暂缓提示。每条候选带“复制”按钮，复制后需自行到 QQ 粘贴发送——应用**不会**自动填入或发送。首次使用可在引导页选择说话习惯（语气/长度/口头禅/回避词），存于本机并影响模板选择。
+- **分析历史（可选，默认关闭）**：首次启动引导中明示选择。开启后判定结果加密落盘（SQLite，敏感字段 AES-256/GCM，密钥在 Android Keystore；会话索引用加盐哈希），默认保留 30 天/5000 条并自动清理；设置页“数据管理”可调整保留期、切换开关、一键清空。“分析历史”页按会话回看判定时间线。关闭时不写任何数据，行为与原版一致。
+- 代码组织：新增 `data/`（`HistoryDb`、`HistoryStore`、`FieldCipher`、`UserStyleProfile`）、`suggest/`（`ReplySuggester`、`SuggestionBook`）、`ui/`（`HistoryActivity`、`OnboardingActivity`）三个子包，原 9 个文件的改动见 git 历史。单测 `ReplySuggesterTest` 覆盖模板选择、风险/边界暂缓、语气切换、去重与禁忌词过滤。
+
+
 ## 下载并安装
 
 从 [GitHub Release 下载签名 APK](https://github.com/hufaei/jev-qq-analyst/releases/latest/download/jev-qq-analyst-android.apk)，在手机上打开文件安装。APK 的最低系统版本是 Android 8.0（API 26）。**实测组合**：Xiaomi 17 Pro（型号 `25098PN5AC`）、Android 16（API 36）、HyperOS `OS3.0.319.0.WBLCNXM`、QQ 9.3.55；普通与长文本对方消息均已完成识别和 Jev 判断。其他设备及 QQ 版本仍需验证。

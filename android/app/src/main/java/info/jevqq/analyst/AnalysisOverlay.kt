@@ -1,5 +1,7 @@
 package info.jevqq.analyst
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -13,6 +15,9 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import info.jevqq.analyst.suggest.SuggestionBook
+import info.jevqq.analyst.suggest.SuggestionResult
 import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -88,7 +93,8 @@ internal class AnalysisOverlay(private val context: Context) {
         surface.addView(resize)
     }
 
-    fun render(plan: VisiblePlan, memory: ConversationMemory, error: String? = null) {
+    fun render(plan: VisiblePlan, memory: ConversationMemory,
+               suggestions: SuggestionBook? = null, error: String? = null) {
         title.text = plan.chat.ifBlank { "Jev · QQ" }
         val ready = plan.targets.count { row -> row.key?.let(memory::verdict) != null }
         subtitle.text = if (plan.targets.isEmpty()) "当前窗口没有可分析的对方文字"
@@ -107,8 +113,8 @@ internal class AnalysisOverlay(private val context: Context) {
         var peerIndex = 0
         plan.rows.forEach { row ->
             if (row.key != null) peerIndex++
-            addRow(row, row.key?.let(memory::verdict), error != null,
-                peerIndex)
+            addRow(row, row.key?.let(memory::verdict),
+                row.key?.let { suggestions?.get(it) }, error != null, peerIndex)
         }
         scroll.layoutParams = (scroll.layoutParams as LinearLayout.LayoutParams).apply {
             height = if (plan.rows.isEmpty()) dp(78) else bodyHeight
@@ -193,7 +199,8 @@ internal class AnalysisOverlay(private val context: Context) {
             .putInt("width", panelWidth).putInt("height", bodyHeight).apply()
     }
 
-    private fun addRow(row: DisplayRow, verdict: Verdict?, unavailable: Boolean, peerIndex: Int) {
+    private fun addRow(row: DisplayRow, verdict: Verdict?, suggestion: SuggestionResult?,
+                       unavailable: Boolean, peerIndex: Int) {
         val message = row.message
         val own = message.side == Side.ME
         val card = LinearLayout(context).apply {
@@ -225,6 +232,7 @@ internal class AnalysisOverlay(private val context: Context) {
                 })
             } else {
                 addVerdict(card, verdict)
+                if (suggestion != null) addSuggestions(card, suggestion)
             }
         }
         val margins = LinearLayout.LayoutParams(-1, -2).apply {
@@ -308,6 +316,46 @@ internal class AnalysisOverlay(private val context: Context) {
         }
     }
 
+    /** Local reply suggestions; copy is a manual user action, nothing is auto-filled. */
+    private fun addSuggestions(card: LinearLayout, suggestion: SuggestionResult) {
+        card.addView(text("建议回复 · 本地生成", 10f, MUTED, true).apply {
+            setPadding(0, dp(11), 0, dp(3))
+        })
+        if (suggestion.holdOff) {
+            card.addView(pill(suggestion.holdReason, REPLY_WAIT_BG, AMBER).apply {
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) }
+            })
+            return
+        }
+        suggestion.replies.forEach { reply ->
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(5), dp(4), dp(5))
+                background = rounded(SUGGEST_BG, 6)
+            }
+            val textColumn = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(text(reply.actionLabel, 9f, MUTED, true))
+                addView(text(reply.text, 11f, INK).apply {
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }
+            row.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(text("复制", 10f, PROB_HIGH_TEXT, true).apply {
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                background = rounded(PROB_HIGH_BG, 6)
+                setOnClickListener {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("建议回复", reply.text))
+                    Toast.makeText(context, "已复制，请到 QQ 粘贴后手动发送", Toast.LENGTH_SHORT).show()
+                }
+            })
+            card.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) })
+        }
+    }
+
     private fun pill(value: String, background: Int, ink: Int) = text(value, 10f, ink, true).apply {
         setPadding(dp(9), dp(5), dp(9), dp(5))
         this.background = rounded(background, 8)
@@ -349,5 +397,6 @@ internal class AnalysisOverlay(private val context: Context) {
         val REPLY_YES_BG = Color.rgb(227, 240, 233)
         val REPLY_WAIT_BG = Color.rgb(245, 235, 220)
         val ACTION_BG = Color.rgb(245, 246, 247)
+        val SUGGEST_BG = Color.rgb(240, 244, 250)
     }
 }

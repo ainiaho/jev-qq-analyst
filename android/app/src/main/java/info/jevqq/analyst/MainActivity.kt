@@ -1,6 +1,7 @@
 package info.jevqq.analyst
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Typeface
@@ -18,6 +19,9 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import info.jevqq.analyst.data.HistoryStore
+import info.jevqq.analyst.ui.HistoryActivity
+import info.jevqq.analyst.ui.OnboardingActivity
 import org.json.JSONObject
 import java.io.File
 
@@ -33,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var serviceStatus: TextView
     private lateinit var captureStatus: TextView
     private lateinit var diagnosticStatus: TextView
+    private lateinit var dataStatus: TextView
     private var savedKey = ""
     private var activeMode = EndpointMode.JEV
     private val draftUrls = mutableMapOf<EndpointMode, String>()
@@ -43,6 +48,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = SettingsStore(this)
+        if (!store.onboardingDone()) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+        }
         var loadError: String? = null
         val current = try { store.load() } catch (error: Exception) {
             loadError = error.message ?: getString(R.string.settings_error)
@@ -150,6 +158,50 @@ class MainActivity : Activity() {
             setOnClickListener { exportDiagnostic() }
         }, fullWidth())
 
+        root.addView(text("加强版功能", 18f))
+        root.addView(Button(this).apply {
+            text = "分析历史"
+            setOnClickListener { startActivity(Intent(this@MainActivity, HistoryActivity::class.java)) }
+        }, fullWidth())
+
+        root.addView(text("数据管理", 18f))
+        dataStatus = text("", 13f)
+        root.addView(dataStatus)
+        root.addView(Button(this).apply {
+            text = if (store.historyEnabled()) "关闭分析历史" else "开启分析历史"
+            setOnClickListener {
+                store.setHistoryEnabled(!store.historyEnabled())
+                (it as Button).text = if (store.historyEnabled()) "关闭分析历史" else "开启分析历史"
+                refreshDataStatus()
+            }
+        }, fullWidth())
+        root.addView(Button(this).apply {
+            text = "历史保留天数：${store.retentionDays()} 天"
+            setOnClickListener {
+                val options = arrayOf("7 天", "30 天", "90 天")
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("历史保留天数")
+                    .setItems(options) { _, which ->
+                        store.setRetentionDays(intArrayOf(7, 30, 90)[which])
+                        (it as Button).text = "历史保留天数：${store.retentionDays()} 天"
+                    }.show()
+            }
+        }, fullWidth())
+        root.addView(Button(this).apply {
+            text = "清空全部历史数据"
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("清空历史")
+                    .setMessage("将删除本机保存的全部分析记录和联系人画像，且不可恢复。确定继续？")
+                    .setPositiveButton("清空") { _, _ ->
+                        if (store.historyEnabled()) HistoryStore(this@MainActivity).clearAll()
+                        refreshDataStatus()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }, fullWidth())
+
         modes.check(if (activeMode == EndpointMode.JEV) jev.id else gateway.id)
         keySection.visibility = if (activeMode == EndpointMode.JEV) View.VISIBLE else View.GONE
         modes.setOnCheckedChangeListener { _, checked ->
@@ -163,6 +215,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        refreshDataStatus()
         if (::serviceStatus.isInitialized) {
             val component = ComponentName(packageName, "$packageName.QqAccessibilityService")
             val enabled = Settings.Secure.getString(contentResolver,
@@ -179,6 +232,13 @@ class MainActivity : Activity() {
                 else -> R.string.diagnostic_empty
             })
         }
+    }
+
+    private fun refreshDataStatus() {
+        if (!::dataStatus.isInitialized) return
+        dataStatus.text = if (store.historyEnabled())
+            "分析历史：已开启（本机加密保存，保留 ${store.retentionDays()} 天）"
+        else "分析历史：未开启（不写任何数据到磁盘，行为与原版一致）"
     }
 
     private fun exportDiagnostic() {
@@ -259,6 +319,12 @@ class MainActivity : Activity() {
 
     private fun text(resId: Int, size: Float) = TextView(this).apply {
         setText(resId)
+        textSize = size
+        setPadding(0, dp(8), 0, dp(8))
+    }
+
+    private fun text(value: String, size: Float) = TextView(this).apply {
+        text = value
         textSize = size
         setPadding(0, dp(8), 0, dp(8))
     }

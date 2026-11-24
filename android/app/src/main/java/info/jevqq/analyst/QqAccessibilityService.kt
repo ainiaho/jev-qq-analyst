@@ -9,6 +9,11 @@ import android.os.Looper
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import info.jevqq.analyst.data.HistoryStore
+import info.jevqq.analyst.data.UserStyleProfile
+import info.jevqq.analyst.suggest.ReplySuggester
+import info.jevqq.analyst.suggest.SuggestionBook
+import info.jevqq.analyst.suggest.SuggestionResult
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
@@ -17,9 +22,13 @@ class QqAccessibilityService : AccessibilityService() {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     private val memory = ConversationMemory()
+    private val suggestions = SuggestionBook()
     private val inFlight = HashSet<VerdictKey>()
     private var overlay: AnalysisOverlay? = null
     private var spec: JSONObject? = null
+    private var replySuggester: ReplySuggester? = null
+    private var history: HistoryStore? = null
+    private var style = UserStyleProfile()
     private var visiblePlan: VisiblePlan? = null
     private var cachedSettings: ConnectionSettings? = null
     private var fingerprint = ""
@@ -36,6 +45,17 @@ class QqAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         recordStatus("无障碍服务已连接，等待 QQ 页面事件")
         spec = JSONObject(assets.open("decision_questions.json").bufferedReader().use { it.readText() })
+        replySuggester = runCatching {
+            val templates = JSONObject(assets.open("reply_templates.json")
+                .bufferedReader().use { it.readText() })
+            ReplySuggester(spec!!, templates)
+        }.getOrNull()
+        style = UserStyleProfile.load(this)
+        // History is opt-in; when disabled nothing is ever instantiated or written.
+        history = if (SettingsStore(this).historyEnabled()) {
+            runCatching { HistoryStore(this).also { it.prune(SettingsStore(this).retentionDays()) } }
+                .getOrNull()
+        } else null
         overlay = AnalysisOverlay(this)
         scheduleCapture()
     }
@@ -114,26 +134,27 @@ class QqAccessibilityService : AccessibilityService() {
         val settings = settingsResult.getOrNull()
         if (settings != null && settings != cachedSettings) {
             memory.clear()
+            suggestions.clear()
             cachedSettings = settings
         }
         val plan = VisiblePlan.from(snapshot, memory)
         visiblePlan = plan
         if (snapshot.title.isNullOrBlank()) {
             recordStatus("已识别聊天页，但当前 QQ 的会话标题节点未识别")
-            overlay?.render(plan, memory, "未识别到会话标题，暂不分析")
+            overlay?.render(plan, memory, suggestions, "未识别到会话标题，暂不分析")
             return
         }
         if (settings == null) {
             recordStatus("已识别聊天页，但接口设置读取失败")
-            overlay?.render(plan, memory, "读取接口设置失败")
+            overlay?.render(plan, memory, suggestions, "读取接口设置失败")
             return
         }
         if (settings.mode == EndpointMode.JEV && settings.apiKey.isBlank()) {
             recordStatus("已识别聊天页，但尚未保存 Jev API Key")
-            overlay?.render(plan, memory, "请先在 Jev · QQ 中填写 API Key")
+            overlay?.render(plan, memory, suggestions, "请先在 Jev · QQ 中填写 API Key")
             return
         }
-        overlay?.render(plan, memory)
+        overlay?.render(plan, memory, suggestions)
         recordStatus(when {
             plan.rows.isEmpty() -> "已识别聊天页，但没有可见消息节点"
             plan.targets.isEmpty() -> "已识别聊天页，但没有可判断的对方文字"
@@ -148,7 +169,7 @@ class QqAccessibilityService : AccessibilityService() {
         if (targets.isEmpty()) return
         try { settings.endpoint() }
         catch (error: IllegalArgumentException) {
-            overlay?.render(plan, memory, error.message ?: "接口 URL 无效")
+            overlay?.render(plan, memory, suggestions, error.message ?: "接口 URL 无效")
             return
         }
         val client = DecisionClient(settings, currentSpec)
@@ -160,17 +181,42 @@ class QqAccessibilityService : AccessibilityService() {
                 val outcome = runCatching {
                     client.judge(row.message.text, row.context, row.message.quote)
                 }
+                // Local-only additions run off the main thread: template suggestions
+                // are pure CPU work and history writes touch disk.
+                outcome.onSuccess { verdict ->
+                    applyEnhancements(plan.chat, key, verdict, row.message.text, row.message.quote)
+                }
                 main.post {
                     if (token != generation || visiblePlan !== plan) return@post
                     inFlight.remove(key)
-                    outcome.onSuccess { memory.put(key, it) }
+                    outcome.onSuccess { verdict -> memory.put(key, verdict) }
                     val error = outcome.exceptionOrNull()?.let { failure ->
                         when (failure) {
                             is IllegalArgumentException, is IllegalStateException -> failure.message
                             else -> "网络连接失败"
                         }
                     }
-                    overlay?.render(plan, memory, error)
+                    overlay?.render(plan, memory, suggestions, error)
+                }
+            }
+        }
+    }
+
+    /**
+     * Local-only additions after a successful judgement: template-based reply
+     * suggestions and (opt-in) encrypted history persistence. Never triggers
+     * any accessibility action; the user copies suggestions manually.
+     */
+    private fun applyEnhancements(chat: String, key: VerdictKey, verdict: Verdict,
+                                  message: String, quote: String) {
+        replySuggester?.let { suggester ->
+            val result: SuggestionResult = suggester.suggest(
+                verdict, style, usedTexts = suggestions.textsFor(chat))
+            suggestions.put(key, result)
+            history?.let { store ->
+                runCatching {
+                    store.append(chat, message, quote, verdict,
+                        if (result.holdOff) emptyList() else result.replies.map { it.text })
                 }
             }
         }
